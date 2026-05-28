@@ -176,8 +176,8 @@ It is intended for agents and long-running integrations that want a single
 process for chats, history, send, and watch.
 
 Read methods: `chats.list`, `messages.history`, `watch.subscribe`,
-`watch.unsubscribe`. Mutating: `send`. See [docs/rpc.md](docs/rpc.md) for
-request and response shapes.
+`watch.unsubscribe`. Mutating: `send`. Bridge introspection: `handles.check`.
+See [docs/rpc.md](docs/rpc.md) for request and response shapes.
 
 ## Attachments
 

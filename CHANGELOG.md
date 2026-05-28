@@ -4,6 +4,7 @@
 
 ### JSON-RPC
 - fix: return chat GUID, message GUID, and service identity from JSON-RPC send/create responses when observable (#119, thanks @svetly).
+- feat: expose `handles.check` for bridge-backed iMessage handle availability checks (#120, thanks @svetly).
 
 ## 0.9.0 - 2026-05-16
 

@@ -142,6 +142,30 @@ Result:
 
 `send.rich` and `send.attachment` return `guid` / `message_id` when the bridge reports the sent message GUID.
 
+### `handles.check`
+
+Requires the IMCore bridge.
+
+Params:
+
+- `address` (string, required) — phone number or email address.
+- `alias_type` (`phone` | `email`, optional) — inferred from `address` when omitted.
+- `service` (`iMessage`, optional) — SMS checks are rejected.
+
+Result:
+
+```json
+{
+  "ok": true,
+  "address": "+14155551212",
+  "alias_type": "phone",
+  "destination": "tel:+14155551212",
+  "id_status": 1,
+  "available": true,
+  "service": "iMessage"
+}
+```
+
 ## Objects
 
 ### Chat
