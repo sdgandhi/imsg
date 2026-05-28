@@ -1,3 +1,5 @@
+![imsg banner](docs/assets/readme-banner.jpg)
+
 # imsg
 
 Read, watch, and send iMessage / SMS from the macOS terminal — with stable JSON
