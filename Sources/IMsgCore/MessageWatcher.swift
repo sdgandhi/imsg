@@ -61,7 +61,18 @@ private final class WatchState: @unchecked Sendable {
 
   private var cursor: Int64
   #if os(macOS)
-    private var sources: [DispatchSourceFileSystemObject] = []
+    private struct FileWatchIdentity: Equatable {
+      let device: UInt64
+      let inode: UInt64
+    }
+
+    private struct FileWatchRegistration {
+      let source: DispatchSourceFileSystemObject
+      let identity: FileWatchIdentity
+    }
+
+    private var fileSources: [String: FileWatchRegistration] = [:]
+    private var directorySource: DispatchSourceFileSystemObject?
   #endif
   private var pending = false
   private var stopped = false
@@ -86,23 +97,15 @@ private final class WatchState: @unchecked Sendable {
         if self.cursor == 0 {
           self.cursor = try self.store.maxRowID()
         }
+        #if os(macOS)
+          self.refreshFileSources()
+          self.installDirectorySource()
+        #endif
         self.poll()
+        self.scheduleFallbackPoll()
       } catch {
         self.continuation.finish(throwing: error)
       }
-    }
-
-    #if os(macOS)
-      let paths = [store.path, store.path + "-wal", store.path + "-shm"]
-      for path in paths {
-        if let source = makeSource(path: path) {
-          sources.append(source)
-        }
-      }
-    #endif
-
-    queue.async {
-      self.scheduleFallbackPoll()
     }
   }
 
@@ -110,15 +113,72 @@ private final class WatchState: @unchecked Sendable {
     queue.async {
       self.stopped = true
       #if os(macOS)
-        for source in self.sources {
-          source.cancel()
+        for registration in self.fileSources.values {
+          registration.source.cancel()
         }
-        self.sources.removeAll()
+        self.fileSources.removeAll()
+        self.directorySource?.cancel()
+        self.directorySource = nil
       #endif
     }
   }
 
   #if os(macOS)
+    private var watchedFilePaths: [String] {
+      [store.path, store.path + "-wal", store.path + "-shm"]
+    }
+
+    private var watchDirectoryPath: String? {
+      guard store.path.hasPrefix("/") else { return nil }
+      let directoryPath = URL(fileURLWithPath: store.path).deletingLastPathComponent().path
+      var isDirectory: ObjCBool = false
+      guard
+        !directoryPath.isEmpty,
+        FileManager.default.fileExists(atPath: directoryPath, isDirectory: &isDirectory),
+        isDirectory.boolValue
+      else {
+        return nil
+      }
+      return directoryPath
+    }
+
+    private func refreshFileSources() {
+      if stopped { return }
+
+      for path in watchedFilePaths {
+        guard let currentIdentity = fileIdentity(path: path) else {
+          if let registration = fileSources.removeValue(forKey: path) {
+            registration.source.cancel()
+          }
+          continue
+        }
+
+        if let registration = fileSources[path] {
+          if registration.identity == currentIdentity {
+            continue
+          }
+          registration.source.cancel()
+          fileSources[path] = nil
+        }
+
+        if let source = makeSource(path: path) {
+          fileSources[path] = FileWatchRegistration(source: source, identity: currentIdentity)
+        }
+      }
+    }
+
+    private func installDirectorySource() {
+      guard directorySource == nil, let path = watchDirectoryPath else { return }
+      guard let source = makeSource(path: path) else { return }
+      directorySource = source
+    }
+
+    private func fileIdentity(path: String) -> FileWatchIdentity? {
+      var info = stat()
+      guard stat(path, &info) == 0 else { return nil }
+      return FileWatchIdentity(device: UInt64(info.st_dev), inode: UInt64(info.st_ino))
+    }
+
     private func makeSource(path: String) -> DispatchSourceFileSystemObject? {
       let fd = open(path, O_EVTONLY)
       guard fd >= 0 else { return nil }
@@ -128,6 +188,7 @@ private final class WatchState: @unchecked Sendable {
         queue: queue
       )
       source.setEventHandler { [weak self] in
+        self?.refreshFileSources()
         self?.schedulePoll()
       }
       source.setCancelHandler {
@@ -155,6 +216,9 @@ private final class WatchState: @unchecked Sendable {
     guard let interval = configuration.fallbackPollInterval, interval > 0 else { return }
     queue.asyncAfter(deadline: .now() + interval) { [weak self] in
       guard let self, !self.stopped else { return }
+      #if os(macOS)
+        self.refreshFileSources()
+      #endif
       self.poll()
       self.scheduleFallbackPoll()
     }

@@ -49,7 +49,7 @@ private enum WatcherTestDatabase {
       connection: db, path: ":memory:", hasAttributedBody: false, hasReactionColumns: false)
   }
 
-  static func makeMutableStore() throws -> WatcherTestStore {
+  static func makeMutableStore(path: String = ":memory:") throws -> WatcherTestStore {
     let db = try Connection(.inMemory)
     try db.execute(
       """
@@ -70,7 +70,7 @@ private enum WatcherTestDatabase {
     try db.run("INSERT INTO handle(ROWID, id) VALUES (1, '+123')")
 
     let store = try MessageStore(
-      connection: db, path: ":memory:", hasAttributedBody: false, hasReactionColumns: false)
+      connection: db, path: path, hasAttributedBody: false, hasReactionColumns: false)
     return WatcherTestStore(
       store: store,
       insertMessage: { rowID, text in
@@ -88,6 +88,26 @@ private enum WatcherTestDatabase {
         }
       }
     )
+  }
+}
+
+private func nextMessage(
+  from stream: AsyncThrowingStream<Message, Error>,
+  timeoutNanoseconds: UInt64 = 2_000_000_000
+) async throws -> Message? {
+  try await withThrowingTaskGroup(of: Message?.self) { group in
+    group.addTask {
+      var iterator = stream.makeAsyncIterator()
+      return try await iterator.next()
+    }
+    group.addTask {
+      try await Task.sleep(nanoseconds: timeoutNanoseconds)
+      return nil
+    }
+
+    let message = try await group.next() ?? nil
+    group.cancelAll()
+    return message
   }
 }
 
@@ -136,3 +156,57 @@ func messageWatcherFallbackPollYieldsMessagesWithoutFileEvents() async throws {
   #expect(message?.rowID == 2)
   #expect(message?.text == "fallback")
 }
+
+#if os(macOS)
+  @Test
+  func messageWatcherRearmsSidecarAfterRotation() async throws {
+    let tempDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "imsg-watch-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: tempDirectory,
+      withIntermediateDirectories: true
+    )
+    defer {
+      try? FileManager.default.removeItem(at: tempDirectory)
+    }
+
+    let dbURL = tempDirectory.appendingPathComponent("chat.db")
+    let walURL = URL(fileURLWithPath: dbURL.path + "-wal")
+    let shmURL = URL(fileURLWithPath: dbURL.path + "-shm")
+    FileManager.default.createFile(atPath: dbURL.path, contents: Data())
+    FileManager.default.createFile(atPath: walURL.path, contents: Data())
+    FileManager.default.createFile(atPath: shmURL.path, contents: Data())
+
+    let fixture = try WatcherTestDatabase.makeMutableStore(path: dbURL.path)
+    let watcher = MessageWatcher(store: fixture.store)
+    let stream = watcher.stream(
+      chatID: nil,
+      sinceRowID: 0,
+      configuration: MessageWatcherConfiguration(
+        debounceInterval: 0.01,
+        fallbackPollInterval: nil,
+        batchLimit: 10
+      )
+    )
+
+    try await Task.sleep(nanoseconds: 100_000_000)
+    try FileManager.default.moveItem(
+      at: walURL,
+      to: tempDirectory.appendingPathComponent("chat.db-wal.old")
+    )
+    FileManager.default.createFile(atPath: walURL.path, contents: Data())
+    try await Task.sleep(nanoseconds: 100_000_000)
+
+    try fixture.insertMessage(2, "rotated")
+    let walHandle = try FileHandle(forWritingTo: walURL)
+    try walHandle.seekToEnd()
+    try walHandle.write(contentsOf: Data("x".utf8))
+    try walHandle.close()
+
+    let message = try await nextMessage(from: stream, timeoutNanoseconds: 3_000_000_000)
+    #expect(message?.rowID == 2)
+    #expect(message?.text == "rotated")
+  }
+#endif

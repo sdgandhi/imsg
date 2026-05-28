@@ -95,14 +95,19 @@ The watcher listens for `kqueue` filesystem events on:
 - `~/Library/Messages/chat.db`
 - `~/Library/Messages/chat.db-wal`
 - `~/Library/Messages/chat.db-shm`
+- `~/Library/Messages/`
 
 Whenever any of those files change, the watcher checks for new rows past the cursor.
+The directory watch lets it detect WAL sidecar creation, deletion, and replacement after
+SQLite checkpoints.
 
 ## Polling fallback
 
 macOS sometimes drops or coalesces filesystem events — especially under heavy I/O, after sleep/wake, or when Messages rotates the WAL sidecars. Without intervention, a watch session can go silent while the database keeps changing.
 
 `imsg watch` runs a low-frequency poll alongside the event watcher. If the cursor falls behind the actual rowid, the poller catches up and emits the missed rows. You don't configure this — it's always on.
+Each fallback poll also refreshes the file watches, so a rotated `chat.db-wal` or
+`chat.db-shm` is reopened without needing an external `touch chat.db`.
 
 This is the fix for the long-standing "watch goes silent after a while" class of bug. See `CHANGELOG.md` 0.6.0 entry.
 
