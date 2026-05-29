@@ -438,6 +438,96 @@ func sendCommandRejectsMisroutedChatGhost() async throws {
   }
 }
 
+@Test
+func sendCommandAutoResolvesToSMSWhenDetected() async throws {
+  let values = ParsedValues(
+    positional: [],
+    options: ["to": ["+15551234567"], "text": ["hi"], "service": ["auto"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  var captured: MessageSendOptions?
+  _ = try await StdoutCapture.capture {
+    try await SendCommand.run(
+      values: values,
+      runtime: runtime,
+      sendMessage: { options in captured = options },
+      resolveSentMessage: { _, _, _, _ in nil },
+      resolveService: { _, _ in .sms }
+    )
+  }
+  #expect(captured?.service == .sms)
+}
+
+@Test
+func sendCommandAutoResolvesUnknownToIMessage() async throws {
+  let values = ParsedValues(
+    positional: [],
+    options: ["to": ["+15559998888"], "text": ["hi"], "service": ["auto"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  var captured: MessageSendOptions?
+  _ = try await StdoutCapture.capture {
+    try await SendCommand.run(
+      values: values,
+      runtime: runtime,
+      sendMessage: { options in captured = options },
+      resolveSentMessage: { _, _, _, _ in nil },
+      resolveService: { _, _ in .unknown }
+    )
+  }
+  #expect(captured?.service == .imessage)
+  #expect(captured?.allowSMSFallback == true)
+}
+
+@Test
+func sendCommandHonorsNoSMSFallbackFlag() async throws {
+  let values = ParsedValues(
+    positional: [],
+    options: ["to": ["+15551234567"], "text": ["hi"]],
+    flags: ["noSMSFallback"]
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  var captured: MessageSendOptions?
+  _ = try await StdoutCapture.capture {
+    try await SendCommand.run(
+      values: values,
+      runtime: runtime,
+      sendMessage: { options in captured = options },
+      resolveSentMessage: { _, _, _, _ in nil },
+      resolveService: { _, _ in .imessage }
+    )
+  }
+  #expect(captured?.allowSMSFallback == false)
+}
+
+@Test
+func sendCommandExplicitServiceSkipsDetection() async throws {
+  let values = ParsedValues(
+    positional: [],
+    options: ["to": ["+15551234567"], "text": ["hi"], "service": ["imessage"]],
+    flags: []
+  )
+  let runtime = RuntimeOptions(parsedValues: values)
+  var resolverCalled = false
+  var captured: MessageSendOptions?
+  _ = try await StdoutCapture.capture {
+    try await SendCommand.run(
+      values: values,
+      runtime: runtime,
+      sendMessage: { options in captured = options },
+      resolveSentMessage: { _, _, _, _ in nil },
+      resolveService: { _, _ in
+        resolverCalled = true
+        return .sms
+      }
+    )
+  }
+  #expect(captured?.service == .imessage)
+  #expect(resolverCalled == false)
+}
+
 private func jsonObject(from output: String) throws -> [String: Any] {
   let line = output.split(separator: "\n").first.map(String.init) ?? ""
   let data = Data(line.utf8)

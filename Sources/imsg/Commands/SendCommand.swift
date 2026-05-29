@@ -23,6 +23,11 @@ enum SendCommand {
           .make(
             label: "region", names: [.long("region")],
             help: "default region for phone normalization"),
+        ],
+        flags: [
+          .make(
+            label: "noSMSFallback", names: [.long("no-sms-fallback")],
+            help: "disable automatic iMessage->SMS fallback for phone recipients")
         ]
       )
     ),
@@ -49,6 +54,10 @@ enum SendCommand {
     storeFactory: @escaping (String) throws -> MessageStore = { try MessageStore(path: $0) },
     contactResolverFactory: @escaping (String) async -> any ContactResolving = { region in
       await ContactResolver.create(region: region)
+    },
+    resolveService: @escaping (MessageStore, String) -> HandleServiceAvailability = {
+      store, handle in
+      (try? store.preferredService(forHandle: handle)) ?? .unknown
     }
   ) async throws {
     let dbPath = values.option("db") ?? MessageStore.defaultPath
@@ -103,14 +112,27 @@ enum SendCommand {
       throw IMsgError.invalidChatTarget("Missing chat identifier or guid")
     }
 
+    var effectiveService = service
+    if service == .auto && !input.hasChatTarget && !input.recipient.isEmpty {
+      switch resolveService(store, input.recipient) {
+      case .imessage, .unknown:
+        effectiveService = .imessage
+      case .sms:
+        effectiveService = .sms
+      }
+    }
+
+    let allowSMSFallback = !values.flag("noSMSFallback")
+
     let options = MessageSendOptions(
       recipient: input.recipient,
       text: text,
       attachmentPath: file,
-      service: service,
+      service: effectiveService,
       region: region,
       chatIdentifier: resolvedTarget.chatIdentifier,
-      chatGUID: resolvedTarget.chatGUID
+      chatGUID: resolvedTarget.chatGUID,
+      allowSMSFallback: allowSMSFallback
     )
     let sentAt = Date()
     try sendMessage(options)
